@@ -7,15 +7,12 @@
 
 Adafruit_VEML7700 veml;
 
-#define ROLLING_WINDOW_SIZE 25  // Change this to desired N
+#define ROLLING_WINDOW_SIZE 25  // for 200ms update that gives 5s avg window
+#define UPDATE_INTERVAL_MS 200
 
 uint16_t rollingBuffer[ROLLING_WINDOW_SIZE] = {0};
 uint8_t rollingIndex = 0;
 uint8_t rollingCount = 0;
-
-uint16_t rollingBuffer_raw[ROLLING_WINDOW_SIZE] = {0};
-uint8_t rollingIndex_raw = 0;
-uint8_t rollingCount_raw = 0;
 
 /* ---------- LED helpers ------------------------------------------------ */
 static inline uint8_t xyIdx(uint8_t x, uint8_t y) { return y * 5 + x; }
@@ -109,7 +106,7 @@ void loop()
     
     
 
-    // rolling average for wm2 for led display (1-999 range)
+    // rolling average for wm2
     rollingBuffer[rollingIndex] = wm2;
     rollingIndex = (rollingIndex + 1) % ROLLING_WINDOW_SIZE;
     if (rollingCount < ROLLING_WINDOW_SIZE) rollingCount++;
@@ -118,19 +115,12 @@ void loop()
     for (uint8_t i = 0; i < rollingCount; ++i) sum += rollingBuffer[i];
     uint16_t wm2_avgVal = (sum + rollingCount / 2) / rollingCount;
 
-    // // rolling average for wm2 raw value
-    // rollingBuffer_raw[rollingIndex_raw] = wm2;
-    // rollingIndex_raw = (rollingIndex_raw + 1) % ROLLING_WINDOW_SIZE;
-    // if (rollingCount_raw < ROLLING_WINDOW_SIZE) rollingCount_raw++;
-
-    
-    // uint32_t sum_raw = 0;
-    // for (uint8_t i = 0; i < rollingCount_raw; ++i) sum_raw += rollingBuffer_raw[i];
-    // float avgVal_raw = (sum_raw + rollingCount_raw / 2) / rollingCount_raw;
+    // capping wm2 value to 1-999 for LED bargraph display
     uint16_t val_max_999 = wm2_avgVal > 999 ? 999 : (uint16_t)round(wm2_avgVal);
     uint16_t wm2_avg_val__min_1__max_999 = val_max_999 < 1 ? 1 : val_max_999;
 
     Serial.printf("Lux:%7.0f  |  W/m² (1-999):%4u  |  W/m² raw: %4u \n", lux, wm2_avg_val__min_1__max_999, wm2_avgVal);
     showValue(wm2_avg_val__min_1__max_999);
-    delay(200);
+
+    delay(UPDATE_INTERVAL_MS);
 }
