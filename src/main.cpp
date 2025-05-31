@@ -1,9 +1,6 @@
-#include <M5Atom.h>
+#include <Arduino.h>
 #include <Wire.h>
 #include <Adafruit_VEML7700.h>
-
-#define I2C_SDA 25
-#define I2C_SCL 21
 
 Adafruit_VEML7700 veml;
 
@@ -14,47 +11,71 @@ uint16_t rollingBuffer[ROLLING_WINDOW_SIZE] = {0};
 uint8_t rollingIndex = 0;
 uint8_t rollingCount = 0;
 
+#if defined(ESP32)                     // ---------- M5Atom -------------
+  #include <M5Atom.h>
+  #define HAS_LEDS  1
+  /* M5Atom I²C */
+  constexpr int I2C_SDA = 25;
+  constexpr int I2C_SCL = 21;
+
+#elif defined(ESP8266)                 // ---------- D1 mini ------------
+  #define HAS_LEDS  0
+
+  constexpr int I2C_SDA = D2;
+  constexpr int I2C_SCL = D1;
+
+#else                                   // ---------- anything else ------
+  #error "Supported boards: ESP32-based M5Atom or ESP8266-based Wemos D1 mini"
+#endif
+
 /* ---------- LED helpers ------------------------------------------------ */
-static inline uint8_t xyIdx(uint8_t x, uint8_t y) { return y * 5 + x; }
+#if HAS_LEDS
+  #include <FastLED.h>
 
-/* two‑row bar (hundreds / tens). fills bottom cell first, then top */
-void drawBar2RowsScaled(uint8_t value, uint8_t row0, const CRGB &col, uint16_t scale)
-{
-    // value: full value (e.g., val / 10 or val / 100)
-    // scale: max input value for full bar (e.g., 10 for tens, 10 for hundreds)
-    uint8_t filled = (value * 10 + scale / 2) / scale; // round to nearest of 10
-    for (uint8_t p = 0; p < 10; ++p) {
-        uint8_t x = p / 2;
-        uint8_t y = row0 + ((p & 1) ? 0 : 1);  // even = bottom, odd = top
-        M5.dis.drawpix(xyIdx(x, y), (p < filled) ? col : CRGB::Black);
-    }
-}
+    static inline uint8_t xyIdx(uint8_t x, uint8_t y) { return y * 5 + x; }
 
-/* bottom row bar for ones: filled green, tip white (odd) or green (even) */
-void drawOnes(uint8_t digit)
-{
-    uint8_t filled = (digit * 5 + 4) / 9;      // 0‑9 → 0‑5 pixels
-    for (uint8_t x = 0; x < 5; ++x)
+    /* two‑row bar (hundreds / tens). fills bottom cell first, then top */
+    void drawBar2RowsScaled(uint8_t value, uint8_t row0, const CRGB &col, uint16_t scale)
     {
-        if (x < filled)
-        {
-            bool tip   = (x == filled - 1);
-            CRGB color = tip ? (digit & 1 ? CRGB::White : CRGB::Green)
-                             : CRGB(0, 64, 0);           // dim green body
-            M5.dis.drawpix(xyIdx(x, 4), color);
+        // value: full value (e.g., val / 10 or val / 100)
+        // scale: max input value for full bar (e.g., 10 for tens, 10 for hundreds)
+        uint8_t filled = (value * 10 + scale / 2) / scale; // round to nearest of 10
+        for (uint8_t p = 0; p < 10; ++p) {
+            uint8_t x = p / 2;
+            uint8_t y = row0 + ((p & 1) ? 0 : 1);  // even = bottom, odd = top
+            M5.dis.drawpix(xyIdx(x, y), (p < filled) ? col : CRGB::Black);
         }
-        else
-            M5.dis.drawpix(xyIdx(x, 4), CRGB::Black);
     }
-}
 
-void showValue(uint16_t v)
-{
-    M5.dis.clear();
-    drawBar2RowsScaled(v / 100, 0, CRGB::Red, 10);           // hundreds, 0–999 → 0–10
-    drawBar2RowsScaled((v / 10) % 10, 2, CRGB::Yellow, 10);  // tens, 0–99 → 0–10
-    drawOnes(v % 10);                                        // row 4
-}
+    /* bottom row bar for ones: filled green, tip white (odd) or green (even) */
+    void drawOnes(uint8_t digit)
+    {
+        uint8_t filled = (digit * 5 + 4) / 9;      // 0‑9 → 0‑5 pixels
+        for (uint8_t x = 0; x < 5; ++x)
+        {
+            if (x < filled)
+            {
+                bool tip   = (x == filled - 1);
+                CRGB color = tip ? (digit & 1 ? CRGB::White : CRGB::Green)
+                                : CRGB(0, 64, 0);           // dim green body
+                M5.dis.drawpix(xyIdx(x, 4), color);
+            }
+            else
+                M5.dis.drawpix(xyIdx(x, 4), CRGB::Black);
+        }
+    }
+
+    void showValue(uint16_t v)
+    {
+        M5.dis.clear();
+        drawBar2RowsScaled(v / 100, 0, CRGB::Red, 10);           // hundreds, 0–999 → 0–10
+        drawBar2RowsScaled((v / 10) % 10, 2, CRGB::Yellow, 10);  // tens, 0–99 → 0–10
+        drawOnes(v % 10);                                        // row 4
+    }
+#else
+    /* ------ Stub versions so the rest of the sketch compiles identically */
+    inline void showValue(uint16_t) {}
+#endif  /* HAS_LEDS */
 
 /* ---------- simple auto‑range: gain + integration time ----------------- */
 void setRange(uint8_t gIdx, uint8_t itIdx)
@@ -76,30 +97,34 @@ void setRange(uint8_t gIdx, uint8_t itIdx)
 /* --------------------------- setup ------------------------------------ */
 void setup()
 {
-    M5.begin(true, false, true);
-    Serial.begin(115200);
+#if HAS_LEDS
+    M5.begin(true, false, true);          // LEDs, no serial over USB-C
+#else
+    Serial.begin(115200);                 // Serial on Wemos
+#endif
     Wire.begin(I2C_SDA, I2C_SCL);
-
     if (!veml.begin()) {
-        Serial.println("VEML7700 not found");
+        Serial.println(F("VEML7700 not found"));
         while (true) delay(100);
     }
 
-    setRange(0, 0);                         // start: gain 1/8, IT 25 ms
+    setRange(0, 0);                       // gain 1/8, IT 25 ms (sunlight)
+#if HAS_LEDS
     M5.dis.clear();
+#endif
 }
 
 /* ---------------------------- loop ------------------------------------ */
 void loop()
 {
-    //static uint8_t g = 0, it = 0;           // current gain / IT indices
+    static uint8_t g = 0, it = 0;           // current gain / IT indices
     //float lux = veml.readLux();
     float lux = veml.readLuxNormalized();  // correction for high-lux setRange(0, 0) which is gain 1/8, IT 25 ms
     
 
     // /* auto‑range: keep lux in ~300‑25 000 */
-    // if (lux > 25000 && g > 0) { --g; setRange(g, it); return; }
-    // if (lux <   300 && g < 3) { ++g; setRange(g, it); return; }
+    if (lux > 25000 && g > 0) { --g; setRange(g, it); return; }
+    if (lux <   300 && g < 3) { ++g; setRange(g, it); return; }
 
     //float wm2 = lux / 126.7f;               // daylight luminous efficacy - theoretical
     float wm2 = lux / 122;                    // based on https://www.extrica.com/article/21667
@@ -119,7 +144,7 @@ void loop()
     uint16_t val_max_999 = wm2_avgVal > 999 ? 999 : (uint16_t)round(wm2_avgVal);
     uint16_t wm2_avg_val__min_1__max_999 = val_max_999 < 1 ? 1 : val_max_999;
 
-    Serial.printf("Lux:%7.0f  |  W/m² (1-999):%4u  |  W/m² raw: %4u \n", lux, wm2_avg_val__min_1__max_999, wm2_avgVal);
+    Serial.printf("Lux:%7.0f  |  W/m² (1-999):%4u  |  W/m² raw: %4u |  gain: %4u \n", lux, wm2_avg_val__min_1__max_999, wm2_avgVal, g);
     showValue(wm2_avg_val__min_1__max_999);
 
     delay(UPDATE_INTERVAL_MS);
