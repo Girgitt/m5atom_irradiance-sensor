@@ -21,8 +21,8 @@ uint8_t rollingCount = 0;
 
 #define USE_DAV6450  1                 // 0 = disable, 1 = read A0 pyranometer
 #define USE_VEML7700  0
-#define USE_WIFI  0
-#define USE_MQTT  0
+#define USE_WIFI  1
+#define USE_MQTT  1
 
 #if USE_DAV6450
   #if defined(ESP32)                  // ----- M5-Atom -----------------
@@ -73,8 +73,9 @@ PubSubClient client(espClient);
 
 // MQTT topic definitions
 String global_status_topic = "sensors/" + String(mqtt_client_id) + "/status";
-String lux_topic = "sensors/" + String(mqtt_client_id) + "/lux/";
+String lux_topic = "sensors/" + String(mqtt_client_id) + "/lux";
 String watt_topic = "sensors/" + String(mqtt_client_id) + "/watt";
+String watt_dav_topic = "sensors/" + String(mqtt_client_id) + "/watt_dav";
 String gain_topic = "sensors/" + String(mqtt_client_id) + "/gain";
 String command_topic = "sensors/" + String(mqtt_client_id) + "/command";
 
@@ -201,6 +202,39 @@ void reconnect() {
   }
 }
 
+/* Return a reading scaled to 0-2047 (≈ 11 effective bits)            */
+/* We take 4 raw samples (10-bit), sum them, right-shift one bit.      */
+uint16_t analogReadOversampled11(uint8_t pin)
+{
+    uint32_t sum = 0;
+    for (int i = 0; i < 4; ++i) {
+        sum += analogRead(pin);   // 0…1023 each
+        delayMicroseconds(150);   // let the cap settle (≥ 100 µs)
+    }
+    return ((sum + 2) >> 1);        // divide by 2 with rounding
+}
+
+/* ------------------------------------------------------------------
+ *  Smoothed ADC read: 10 samples  →  drop max & min  →  average 8
+ * ------------------------------------------------------------------ */
+uint16_t analogReadTrimmedAvg(uint8_t pin)
+{
+    uint32_t sum   = 0;
+    uint16_t v_min = 0xFFFF, v_max = 0;
+
+    for (uint8_t i = 0; i < 10; ++i) {
+        //uint16_t v = analogRead(pin);
+        uint16_t v = analogReadOversampled11(pin);  // oversampling returns up to 2047
+        sum += v;
+        if (v < v_min) v_min = v;
+        if (v > v_max) v_max = v;
+        //delay(2);                       // 1 ms between samples
+    }
+
+    sum -= (v_min + v_max);             // drop extremes
+    return static_cast<uint16_t>(sum / 8 / 2);   // average of the remaining 8 divided additionally by 2 due to oversampling
+}
+
 /* --------------------------- setup ------------------------------------ */
 void setup()
 {
@@ -270,8 +304,8 @@ void loop()
   #endif
   
   #if USE_DAV6450
-    int    raw      = analogRead(DAV_PIN);
-    float  mV       = (float)raw * ADC_VREF_mV / ADC_COUNTS;
+    int    raw      = analogReadTrimmedAvg(DAV_PIN);
+    float  mV       = ((float)raw / ADC_COUNTS) * ADC_VREF_mV;
     float  dav_wm2  = mV / 1.67f;           // 1.67 mV → 1 W m⁻²
   #else
     float  dav_wm2  = -1;
@@ -290,7 +324,7 @@ void loop()
     uint16_t val_max_999 = wm2_avgVal > 999 ? 999 : (uint16_t)round(wm2_avgVal);
     uint16_t wm2_avg_val__min_1__max_999 = val_max_999 < 1 ? 1 : val_max_999;
 
-    Serial.printf("Lux:%7.0f  |  W/m² (1-999):%4u  |  W/m² raw: %4u |  gain: %4u | W/,2 DAV: %5.0f \n", lux, wm2_avg_val__min_1__max_999, wm2_avgVal, g, dav_wm2);
+    Serial.printf("Lux:%7.0f  |  W/m² (1-999):%4u  |  W/m² raw: %4u |  gain: %4u | W/m² DAV: %5.0f \n", lux, wm2_avg_val__min_1__max_999, wm2_avgVal, g, dav_wm2);
   
   showValue(wm2_avg_val__min_1__max_999);
 
@@ -305,15 +339,23 @@ void loop()
             lastPublish = now;
             
             char payload[10];
+            #if USE_VEML7700
+              dtostrf(lux, 1, 2, payload);
+              client.publish(lux_topic.c_str(), payload, 1);
 
-            dtostrf(lux, 1, 2, payload);
-            client.publish(lux_topic.c_str(), payload, 1);
+              dtostrf(wm2_avgVal, 1, 2, payload);
+              client.publish(watt_topic.c_str(), payload, 1);
 
-            dtostrf(wm2_avgVal, 1, 2, payload);
-            client.publish(watt_topic.c_str(), payload, 1);
+              dtostrf(g, 1, 2, payload);
+              client.publish(gain_topic.c_str(), payload, 1);
+            #endif
 
-            dtostrf(g, 1, 2, payload);
-            client.publish(gain_topic.c_str(), payload, 1);
+            #if USE_DAV6450
+              dtostrf(dav_wm2, 1, 2, payload);
+              client.publish(watt_dav_topic.c_str(), payload, 1);
+
+            #endif
+
         }
 
     }
