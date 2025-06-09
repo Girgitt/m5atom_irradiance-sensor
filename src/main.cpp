@@ -18,6 +18,24 @@ uint16_t rollingBuffer[ROLLING_WINDOW_SIZE] = {0};
 uint8_t rollingIndex = 0;
 uint8_t rollingCount = 0;
 
+
+#define USE_DAV6450  1                 // 0 = disable, 1 = read A0 pyranometer
+#define USE_VEML7700  0
+#define USE_WIFI  0
+#define USE_MQTT  0
+
+#if USE_DAV6450
+  #if defined(ESP32)                  // ----- M5-Atom -----------------
+    constexpr int DAV_PIN       = 36; // GPIO36 = ADC1_CH0 on Atom
+    constexpr int ADC_COUNTS    = 4095;
+    constexpr int ADC_VREF_mV   = 3300;
+  #elif defined(ESP8266)              // ----- Wemos D1 mini ----------
+    constexpr int DAV_PIN       = A0; // built-in divider: 0-3.3 V → 0-1.0 V
+    constexpr int ADC_COUNTS    = 1023;
+    constexpr int ADC_VREF_mV   = 3300;
+  #endif
+#endif
+
 #if defined(ESP32)                     // ---------- M5Atom -------------
   #include <M5Atom.h>
   #include <WiFi.h>
@@ -191,28 +209,39 @@ void setup()
 #else
     Serial.begin(115200);                 // Serial on Wemos
 #endif
-    
-Wire.begin(I2C_SDA, I2C_SCL);
-if (!veml.begin()) {
-    Serial.println(F("VEML7700 not found"));
-    while (true) delay(100);
-}
 
-setRange(0, 0);                       // gain 1/8, IT 25 ms (sunlight)
+#if USE_DAV6450 && defined(ESP32)
+  analogReadResolution(12);               // 0-4095
+  analogSetAttenuation(ADC_11db);         // 0-3.3 V span
+#endif
 
-setup_wifi();
+#if USE_VEML7700
+  Wire.begin(I2C_SDA, I2C_SCL);
+  if (!veml.begin()) {
+      Serial.println(F("VEML7700 not found"));
+      while (true) delay(100);
+  }
+  setRange(0, 0);                       // gain 1/8, IT 25 ms (sunlight)
+#endif
 
-// Set up MQTT client
-client.setServer(mqtt_server, mqtt_port);
-client.setCallback(callback);
 
-// Connect to MQTT server
-reconnect();
-if (client.connected()){
-    Serial.println(F("connected to MQTT broker"));
-}
+#if USE_WIFI
+  setup_wifi();
+#endif
 
-client.setKeepAlive(60);
+#if USE_MQTT
+  // Set up MQTT client
+  client.setServer(mqtt_server, mqtt_port);
+  client.setCallback(callback);
+
+  // Connect to MQTT server
+  reconnect();
+  if (client.connected()){
+      Serial.println(F("connected to MQTT broker"));
+  }
+
+  client.setKeepAlive(60);
+#endif
 
 #if HAS_LEDS
     M5.dis.clear();
@@ -222,7 +251,8 @@ client.setKeepAlive(60);
 /* ---------------------------- loop ------------------------------------ */
 void loop()
 {
-    static uint8_t g = 0, it = 0;           // current gain / IT indices
+  static uint8_t g = 0, it = 0;           // current gain / IT indices
+  #if USE_VEML7700
     //float lux = veml.readLux();
     float lux = veml.readLuxNormalized();  // correction for high-lux setRange(0, 0) which is gain 1/8, IT 25 ms
     
@@ -234,9 +264,20 @@ void loop()
     //float wm2 = lux / 126.7f;               // daylight luminous efficacy - theoretical
     float wm2 = lux / 122;                    // based on https://www.extrica.com/article/21667
     
-    
+  #else
+    float lux = -1;
+    float wm2 = -1;
+  #endif
+  
+  #if USE_DAV6450
+    int    raw      = analogRead(DAV_PIN);
+    float  mV       = (float)raw * ADC_VREF_mV / ADC_COUNTS;
+    float  dav_wm2  = mV / 1.67f;           // 1.67 mV → 1 W m⁻²
+  #else
+    float  dav_wm2  = -1;
+  #endif
 
-    // rolling average for wm2
+      // rolling average for wm2
     rollingBuffer[rollingIndex] = wm2;
     rollingIndex = (rollingIndex + 1) % ROLLING_WINDOW_SIZE;
     if (rollingCount < ROLLING_WINDOW_SIZE) rollingCount++;
@@ -249,9 +290,12 @@ void loop()
     uint16_t val_max_999 = wm2_avgVal > 999 ? 999 : (uint16_t)round(wm2_avgVal);
     uint16_t wm2_avg_val__min_1__max_999 = val_max_999 < 1 ? 1 : val_max_999;
 
-    Serial.printf("Lux:%7.0f  |  W/m² (1-999):%4u  |  W/m² raw: %4u |  gain: %4u \n", lux, wm2_avg_val__min_1__max_999, wm2_avgVal, g);
-    showValue(wm2_avg_val__min_1__max_999);
+    Serial.printf("Lux:%7.0f  |  W/m² (1-999):%4u  |  W/m² raw: %4u |  gain: %4u | W/,2 DAV: %5.0f \n", lux, wm2_avg_val__min_1__max_999, wm2_avgVal, g, dav_wm2);
+  
+  showValue(wm2_avg_val__min_1__max_999);
 
+
+  #if USE_WIFI && USE_MQTT
     if (client.connected()){
         client.loop(); // Process incoming messages
         
@@ -276,6 +320,7 @@ void loop()
     else{
         reconnect();
     }
+  #endif
 
     delay(UPDATE_INTERVAL_MS);
 }
