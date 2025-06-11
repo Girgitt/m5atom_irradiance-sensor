@@ -38,6 +38,13 @@
 #define MQTT_PUBLISH_INTERVAL_MS 2000
 #endif
 
+// ---------- Wi-Fi / MQTT availability parameters ------------------
+#define WIFI_MAX_SETUP_ATTEMPTS      10     // once, during setup()
+#define WIFI_RETRY_INTERVAL_MS    10000UL   // 10 s between retries in loop()
+#define WIFI_MAX_LOOP_ATTEMPTS       15     // before we reboot
+
+#define MQTT_RETRY_INTERVAL_MS    10000UL
+#define MQTT_MAX_LOOP_ATTEMPTS       20
 
 Adafruit_VEML7700 veml;
 
@@ -171,21 +178,97 @@ void setRange(uint8_t gIdx, uint8_t itIdx)
     }
 }
 
-void setup_wifi() {
-  delay(10);
-  // Connect to WiFi
-  Serial.println();
-  Serial.print("Connecting to WiFi...");
+bool setupWifiOnce()
+{
+  Serial.print(F("Connecting to Wi-Fi"));
+  WiFi.mode(WIFI_STA);
+  WiFi.setAutoReconnect(false);          // we’ll manage it ourselves
   WiFi.begin(ssid, password);
-  
-  while (WiFi.status() != WL_CONNECTED) {
-    delay(1000);
-    Serial.print(".");
+
+  for (int i = 0; i < WIFI_MAX_SETUP_ATTEMPTS; ++i)
+  {
+    if (WiFi.waitForConnectResult(3000) == WL_CONNECTED)
+    {
+      Serial.print(F("  ✔  IP="));
+      Serial.println(WiFi.localIP());
+      return true;
+    }
+    Serial.print('.');
   }
-  Serial.println(" connected!");
-  Serial.print("IP address: ");
-  Serial.println(WiFi.localIP());
+  Serial.println(F("  ✖  giving up for now"));
+  return false;                          // let loop() take over
 }
+
+/* ----------- keepWifiAlive()  – non-blocking Wi-Fi watchdog ----------- */
+bool keepWifiAlive()
+{
+  static uint32_t lastTry   = 0;
+  static uint8_t  attempts  = 0;
+
+  if (WiFi.status() == WL_CONNECTED) { attempts = 0; return true; }
+
+  uint32_t now = millis();
+  if (now - lastTry < WIFI_RETRY_INTERVAL_MS) return false;   // wait
+
+  lastTry = now;
+  ++attempts;
+  Serial.printf("\n[Wi-Fi] reconnect attempt %u/%u …\n",
+                attempts, WIFI_MAX_LOOP_ATTEMPTS);
+
+  WiFi.disconnect(true);                 // start from a clean slate
+  WiFi.begin(ssid, password);
+
+  if (WiFi.waitForConnectResult(5000) == WL_CONNECTED)
+  {
+    Serial.println(F("[Wi-Fi] reconnected."));
+    attempts = 0;
+    return true;
+  }
+
+  if (attempts >= WIFI_MAX_LOOP_ATTEMPTS)
+  {
+    Serial.println(F("[Wi-Fi] giving up – rebooting"));
+    delay(200);
+    ESP.restart();
+  }
+  return false;
+}
+
+/* ------ keepMqttAlive()  – non-blocking MQTT watchdog -------------- */
+void keepMqttAlive()
+{
+  static uint32_t lastTry   = 0;
+  static uint8_t  attempts  = 0;
+
+  if (client.connected()) { attempts = 0; client.loop(); return; }
+  if (WiFi.status() != WL_CONNECTED)     { return; }          // Wi-Fi first
+
+  uint32_t now = millis();
+  if (now - lastTry < MQTT_RETRY_INTERVAL_MS) return;         // wait
+
+  lastTry = now;
+  ++attempts;
+  Serial.printf("[MQTT] reconnect attempt %u/%u …\n",
+                attempts, MQTT_MAX_LOOP_ATTEMPTS);
+
+  if (client.connect(mqtt_client_id, mqtt_username, mqtt_password))
+  {
+    Serial.println(F("[MQTT] connected."));
+    client.subscribe(command_topic.c_str());
+    attempts = 0;
+  }
+  else
+  {
+    Serial.printf("[MQTT] rc=%d\n", client.state());
+    if (attempts >= MQTT_MAX_LOOP_ATTEMPTS)
+    {
+      Serial.println(F("[MQTT] giving up – rebooting"));
+      delay(200);
+      ESP.restart();
+    }
+  }
+}
+
 
 // Callback function to handle received messages
 void callback(char* topic, byte* payload, unsigned int length) {
@@ -239,7 +322,7 @@ uint16_t analogReadOversampled11(uint8_t pin)
           yield();
         }
         //wifi_set_opmode(NULL_MODE);
-        system_soft_wdt_stop();
+        ///system_soft_wdt_stop();
         ets_intr_lock( ); 
         noInterrupts();
 
@@ -247,7 +330,7 @@ uint16_t analogReadOversampled11(uint8_t pin)
         
         interrupts();
         ets_intr_unlock(); 
-        system_soft_wdt_restart();
+        //system_soft_wdt_restart();
         //delayMicroseconds(150);   // changed to yield before reading
     }
     return ((sum + 2) >> 1);        // divide by 2 with rounding
@@ -299,7 +382,7 @@ void setup()
 
 
 #if USE_WIFI
-  setup_wifi();
+  setupWifiOnce();
 #endif
 
 #if USE_MQTT
@@ -324,6 +407,19 @@ void setup()
 /* ---------------------------- loop ------------------------------------ */
 void loop()
 {
+
+  #if USE_WIFI
+    if (!keepWifiAlive())                  // returns immediately
+    {
+      delay(UPDATE_INTERVAL_MS);           // still give CPU a short break
+      return;                              // skip the rest of the loop
+    }
+  #endif
+
+  #if USE_WIFI && USE_MQTT
+    keepMqttAlive();                       // only runs when Wi-Fi OK
+  #endif
+
   static uint8_t g = 0, it = 0;           // current gain / IT indices
   #if USE_VEML7700
     //float lux = veml.readLux();
@@ -413,9 +509,7 @@ void loop()
         }
 
     }
-    else{
-        reconnect();
-    }
+
   #endif
 
     delay(UPDATE_INTERVAL_MS);
