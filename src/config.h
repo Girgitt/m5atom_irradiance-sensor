@@ -1,6 +1,16 @@
 #ifndef CONFIG_H
 #define CONFIG_H
 
+#define USE_DAV6450  0                 // 0 = disable, 1 = read A0 pyranometer
+#define USE_VEML7700  1
+#define USE_WIFI  1
+#define USE_MQTT  1
+
+#define ROLLING_WINDOW_SIZE 25  // for 200ms update that gives 5s avg window
+#define UPDATE_INTERVAL_MS 200
+
+#define MQTT_PUBLISH_INTERVAL_MS 2000
+
 // Wi-Fi credentials
 #define WIFI_SSID "<your_wifi_ssid>"
 #define WIFI_PASSWORD "<your_wifi_pass>"
