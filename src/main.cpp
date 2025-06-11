@@ -322,9 +322,11 @@ uint16_t analogReadOversampled11(uint8_t pin)
           yield();
         }
         //wifi_set_opmode(NULL_MODE);
-        #if defined(ESP8266) 
-          system_soft_wdt_stop();
-        #endif
+        
+        // with disabled soft wdt wifi gets interrupted
+        // #if defined(ESP8266) 
+        //   system_soft_wdt_stop();
+        // #endif
         ets_intr_lock( ); 
         noInterrupts();
 
@@ -332,9 +334,9 @@ uint16_t analogReadOversampled11(uint8_t pin)
         
         interrupts();
         ets_intr_unlock(); 
-        #if defined(ESP8266) 
-          system_soft_wdt_restart();
-        #endif
+        // #if defined(ESP8266) 
+        //   system_soft_wdt_restart();
+        // #endif
         //delayMicroseconds(150);   // changed to yield before reading
     }
     return ((sum + 2) >> 1);        // divide by 2 with rounding
@@ -394,11 +396,11 @@ void setup()
   client.setServer(mqtt_server, mqtt_port);
   client.setCallback(callback);
 
-  // Connect to MQTT server
-  reconnect();
-  if (client.connected()){
-      Serial.println(F("connected to MQTT broker"));
-  }
+  // reconnection is moved to main loop
+  //reconnect();
+  //if (client.connected()){
+  //    Serial.println(F("connected to MQTT broker"));
+  //}
 
   client.setKeepAlive(60);
 #endif
