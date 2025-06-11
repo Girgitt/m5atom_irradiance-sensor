@@ -37,3 +37,6 @@
 .vscode/launch.json
 .vscode/extensions.json
 .vscode/ipch
+src/config_dav.h
+src/config_veml.h
+src/config.h.bkp

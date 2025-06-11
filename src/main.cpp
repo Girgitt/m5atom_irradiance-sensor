@@ -7,22 +7,44 @@
 
 #include "config.h"
 
-Adafruit_VEML7700 veml;
+// ---- default USE flags ----
+#ifndef USE_DAV6450
+#define USE_DAV6450 0
+#endif
 
-#define ROLLING_WINDOW_SIZE 25  // for 200ms update that gives 5s avg window
+#ifndef USE_VEML7700
+#define USE_VEML7700 1
+#endif
+
+#ifndef USE_WIFI
+#define USE_WIFI 0
+#endif
+
+#ifndef USE_MQTT
+#define USE_MQTT 0
+#endif
+
+
+// ---- Default timing settings ----
+#ifndef ROLLING_WINDOW_SIZE
+#define ROLLING_WINDOW_SIZE 25
+#endif
+
+#ifndef UPDATE_INTERVAL_MS
 #define UPDATE_INTERVAL_MS 200
+#endif
 
+#ifndef MQTT_PUBLISH_INTERVAL_MS
 #define MQTT_PUBLISH_INTERVAL_MS 2000
+#endif
+
+
+Adafruit_VEML7700 veml;
 
 uint16_t rollingBuffer[ROLLING_WINDOW_SIZE] = {0};
 uint8_t rollingIndex = 0;
 uint8_t rollingCount = 0;
 
-
-#define USE_DAV6450  1                 // 0 = disable, 1 = read A0 pyranometer
-#define USE_VEML7700  0
-#define USE_WIFI  1
-#define USE_MQTT  1
 
 #if USE_DAV6450
   #if defined(ESP32)                  // ----- M5-Atom -----------------
