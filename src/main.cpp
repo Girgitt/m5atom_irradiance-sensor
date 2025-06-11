@@ -42,6 +42,7 @@
 Adafruit_VEML7700 veml;
 
 uint16_t rollingBuffer[ROLLING_WINDOW_SIZE] = {0};
+uint16_t rollingBufferHi[ROLLING_WINDOW_SIZE] = {0};
 uint8_t rollingIndex = 0;
 uint8_t rollingCount = 0;
 
@@ -96,7 +97,9 @@ PubSubClient client(espClient);
 // MQTT topic definitions
 String global_status_topic = "sensors/" + String(mqtt_client_id) + "/status";
 String lux_topic = "sensors/" + String(mqtt_client_id) + "/lux";
+String lux_hi_topic = "sensors/" + String(mqtt_client_id) + "/lux_hi";
 String watt_topic = "sensors/" + String(mqtt_client_id) + "/watt";
+String watt_hi_topic = "sensors/" + String(mqtt_client_id) + "/watt_hi";
 String watt_dav_topic = "sensors/" + String(mqtt_client_id) + "/watt_dav";
 String gain_topic = "sensors/" + String(mqtt_client_id) + "/gain";
 String command_topic = "sensors/" + String(mqtt_client_id) + "/command";
@@ -310,8 +313,8 @@ void loop()
   static uint8_t g = 0, it = 0;           // current gain / IT indices
   #if USE_VEML7700
     //float lux = veml.readLux();
-    float lux = veml.readLuxNormalized();  // correction for high-lux setRange(0, 0) which is gain 1/8, IT 25 ms
-    
+    float lux_hi = veml.readLuxNormalized();  // correction for high-lux setRange(0, 0) which is gain 1/8, IT 25 ms
+    float lux = veml.readLux();
 
     // /* auto‑range: keep lux in ~300‑25 000 */
     //if (lux > 25000 && g > 0) { --g; setRange(g, it); return; }
@@ -319,10 +322,13 @@ void loop()
 
     //float wm2 = lux / 126.7f;               // daylight luminous efficacy - theoretical
     float wm2 = lux / 122;                    // based on https://www.extrica.com/article/21667
-    
+    float wm2_hi = lux_hi / 122; 
+
   #else
     float lux = -1;
+    float lux_hi = -1;
     float wm2 = -1;
+    float wm2_hi = -1;
   #endif
   
   #if USE_DAV6450
@@ -335,6 +341,8 @@ void loop()
 
       // rolling average for wm2
     rollingBuffer[rollingIndex] = wm2;
+    rollingBufferHi[rollingIndex] = wm2_hi;
+
     rollingIndex = (rollingIndex + 1) % ROLLING_WINDOW_SIZE;
     if (rollingCount < ROLLING_WINDOW_SIZE) rollingCount++;
 
@@ -342,11 +350,15 @@ void loop()
     for (uint8_t i = 0; i < rollingCount; ++i) sum += rollingBuffer[i];
     uint16_t wm2_avgVal = (sum + rollingCount / 2) / rollingCount;
 
+    sum = 0;
+    for (uint8_t i = 0; i < rollingCount; ++i) sum += rollingBufferHi[i];
+    uint16_t wm2_hi_avgVal = (sum + rollingCount / 2) / rollingCount;
+
     // capping wm2 value to 1-999 for LED bargraph display
     uint16_t val_max_999 = wm2_avgVal > 999 ? 999 : (uint16_t)round(wm2_avgVal);
     uint16_t wm2_avg_val__min_1__max_999 = val_max_999 < 1 ? 1 : val_max_999;
 
-    Serial.printf("Lux:%7.0f  |  W/m² (1-999):%4u  |  W/m² raw: %4u |  gain: %4u | W/m² DAV: %5.0f \n", lux, wm2_avg_val__min_1__max_999, wm2_avgVal, g, dav_wm2);
+    Serial.printf("Lux:%7.0f  | Lux Hi:%7.0f  | W/m² (1-999):%4u  |  W/m²: %4u | W/m² Hi: %4u | gain: %4u | W/m² DAV: %5.0f \n", lux, lux_hi, wm2_avg_val__min_1__max_999, wm2_avgVal, wm2_hi_avgVal, g, dav_wm2);
   
   showValue(wm2_avg_val__min_1__max_999);
 
@@ -365,8 +377,14 @@ void loop()
               dtostrf(lux, 1, 2, payload);
               client.publish(lux_topic.c_str(), payload, 1);
 
+              dtostrf(lux_hi, 1, 2, payload);
+              client.publish(lux_hi_topic.c_str(), payload, 1);
+
               dtostrf(wm2_avgVal, 1, 2, payload);
               client.publish(watt_topic.c_str(), payload, 1);
+
+              dtostrf(wm2_hi_avgVal, 1, 2, payload);
+              client.publish(watt_hi_topic.c_str(), payload, 1);
 
               dtostrf(g, 1, 2, payload);
               client.publish(gain_topic.c_str(), payload, 1);
