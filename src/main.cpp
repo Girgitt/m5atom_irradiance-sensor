@@ -233,8 +233,22 @@ uint16_t analogReadOversampled11(uint8_t pin)
 {
     uint32_t sum = 0;
     for (int i = 0; i < 4; ++i) {
+        
+        unsigned long loop_time = micros();
+        while(micros()-loop_time<150){
+          yield();
+        }
+        //wifi_set_opmode(NULL_MODE);
+        system_soft_wdt_stop();
+        ets_intr_lock( ); 
+        noInterrupts();
+
         sum += analogRead(pin);   // 0…1023 each
-        delayMicroseconds(150);   // let the cap settle (≥ 100 µs)
+        
+        interrupts();
+        ets_intr_unlock(); 
+        system_soft_wdt_restart();
+        //delayMicroseconds(150);   // changed to yield before reading
     }
     return ((sum + 2) >> 1);        // divide by 2 with rounding
 }
