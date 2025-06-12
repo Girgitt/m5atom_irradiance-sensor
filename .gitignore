@@ -40,3 +40,4 @@
 src/config_dav.h
 src/config_veml.h
 src/config.h.bkp
+src/config_test.h

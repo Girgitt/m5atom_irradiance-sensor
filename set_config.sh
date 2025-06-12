@@ -12,6 +12,8 @@ if [ -z "$1" ]; then
   exit 1
 fi
 
+./restore_config.sh
+
 CONFIG_ID="$1"
 SRC_DIR="./src"
 TARGET_FILE="$SRC_DIR/config.h"

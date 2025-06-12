@@ -1,13 +1,18 @@
 #include <Arduino.h>
 #include <Wire.h>
 #include <Adafruit_VEML7700.h>
-
+#include <Adafruit_ADS1X15.h>
 
 #include <PubSubClient.h>
 
 #include "config.h"
 
 // ---- default USE flags ----
+
+#ifndef USE_DAV6450_ADS1115
+#define USE_DAV6450_ADS1115 0
+#endif
+
 #ifndef USE_DAV6450
 #define USE_DAV6450 0
 #endif
@@ -47,6 +52,12 @@
 #define MQTT_MAX_LOOP_ATTEMPTS       20
 
 Adafruit_VEML7700 veml;
+Adafruit_ADS1115 ads;
+
+bool ads_detected = false;
+constexpr uint8_t ADS_I2C_ADDR     = 0x48;   // change if ADDR ≠ GND
+constexpr uint8_t ADS_INIT_RETRIES = 5;      // how many times to try
+constexpr uint16_t ADS_INIT_DELAY  = 100;    // ms between attempts 
 
 uint16_t rollingBuffer[ROLLING_WINDOW_SIZE] = {0};
 uint16_t rollingBufferHi[ROLLING_WINDOW_SIZE] = {0};
@@ -363,6 +374,19 @@ uint16_t analogReadTrimmedAvg(uint8_t pin)
     return static_cast<uint16_t>(sum / 8 / 2);   // average of the remaining 8 divided additionally by 2 due to oversampling
 }
 
+bool setupAdsOnce()
+{
+  for (uint8_t i = 0; i < ADS_INIT_RETRIES; ++i) {
+      if (ads.begin(ADS_I2C_ADDR)) {           // got ACK & correct ID
+          ads.setGain(GAIN_ONE);               // ±4.096 V → 0.125 mV/LSB
+          Serial.println(F("ADS1115 detected – using external 16-bit ADC"));
+          return true;
+      }
+      delay(ADS_INIT_DELAY);                   // short pause before retry
+  }
+  return false;                          // let loop() take over
+}
+
 /* --------------------------- setup ------------------------------------ */
 void setup()
 {
@@ -377,13 +401,22 @@ void setup()
   analogSetAttenuation(ADC_11db);         // 0-3.3 V span
 #endif
 
+Wire.begin(I2C_SDA, I2C_SCL);
+
 #if USE_VEML7700
-  Wire.begin(I2C_SDA, I2C_SCL);
+  
   if (!veml.begin()) {
       Serial.println(F("VEML7700 not found"));
       while (true) delay(100);
   }
   setRange(0, 0);                       // gain 1/8, IT 25 ms (sunlight)
+#endif
+
+#if USE_DAV6450_ADS1115
+    ads_detected = setupAdsOnce();
+    if (!ads_detected) {
+        Serial.println(F("ADS1115 not found – falling back to internal ADC"));
+    }
 #endif
 
 
@@ -448,9 +481,16 @@ void loop()
   #endif
   
   #if USE_DAV6450
-    int    raw      = analogReadTrimmedAvg(DAV_PIN);
-    float  mV       = ((float)raw / ADC_COUNTS) * ADC_VREF_mV;
-    float  dav_wm2  = mV / 1.67f;           // 1.67 mV → 1 W m⁻²
+    float mV, dav_wm2;
+    if (ads_detected) {
+      int16_t raw = ads.readADC_SingleEnded(0);
+      mV  = raw * 0.125f;      // 125 µV per bit at GAIN_ONE
+    } else {
+      int  raw10      = analogReadTrimmedAvg(DAV_PIN);
+      mV       = ((float)raw10 / ADC_COUNTS) * ADC_VREF_mV;
+    }
+    
+    dav_wm2  = mV / 1.67f;           // 1.67 mV → 1 W m⁻²
   #else
     float  dav_wm2  = -1;
   #endif
